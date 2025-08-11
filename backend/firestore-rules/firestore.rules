@@ -1,0 +1,131 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function hasRole(role) {
+      return isAuthenticated() && getUserData().role == role;
+    }
+    
+    function belongsToOrg(orgId) {
+      return isAuthenticated() && getUserData().orgId == orgId;
+    }
+    
+    function isServiceProvider() {
+      return hasRole('service_provider_admin') || hasRole('service_provider_analyst');
+    }
+    
+    function isServiceProviderAdmin() {
+      return hasRole('service_provider_admin');
+    }
+    
+    function isOrgAdmin(orgId) {
+      return hasRole('acquirer_admin') && belongsToOrg(orgId);
+    }
+    
+    function isOrgAgent(orgId) {
+      return hasRole('acquirer_agent') && belongsToOrg(orgId);
+    }
+    
+    function canAccessOrgData(orgId) {
+      return isServiceProvider() || belongsToOrg(orgId);
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == userId || 
+        isServiceProvider() || 
+        (isOrgAdmin(resource.data.orgId) && belongsToOrg(resource.data.orgId))
+      );
+      
+      allow write: if isAuthenticated() && (
+        isServiceProviderAdmin() ||
+        (isOrgAdmin(resource.data.orgId) && belongsToOrg(resource.data.orgId))
+      );
+      
+      allow create: if isAuthenticated() && (
+        isServiceProviderAdmin() ||
+        (request.auth.uid == userId && belongsToOrg(request.resource.data.orgId))
+      );
+    }
+
+    // Reports collection
+    match /reports/{reportId} {
+      allow read: if isAuthenticated() && (
+        canAccessOrgData(resource.data.orgId) ||
+        (isOrgAgent(resource.data.orgId) && resource.data.userId == request.auth.uid)
+      );
+      
+      allow create: if isAuthenticated() && 
+        belongsToOrg(request.resource.data.orgId) &&
+        request.resource.data.userId == request.auth.uid;
+      
+      allow update: if isAuthenticated() && (
+        isServiceProvider() ||
+        isOrgAdmin(resource.data.orgId)
+      );
+      
+      allow delete: if isAuthenticated() && (
+        isServiceProviderAdmin() ||
+        isOrgAdmin(resource.data.orgId)
+      );
+    }
+
+    // Organizations collection
+    match /organizations/{orgId} {
+      allow read: if isAuthenticated() && (
+        isServiceProvider() || 
+        belongsToOrg(orgId)
+      );
+      
+      allow write: if isAuthenticated() && (
+        isServiceProviderAdmin() ||
+        isOrgAdmin(orgId)
+      );
+    }
+
+    // ATMs collection
+    match /atms/{atmId} {
+      allow read: if isAuthenticated() && (
+        canAccessOrgData(resource.data.orgId)
+      );
+      
+      allow write: if isAuthenticated() && (
+        isServiceProviderAdmin() ||
+        isOrgAdmin(resource.data.orgId)
+      );
+    }
+
+    // Pending changes collection (for maker-checker workflow)
+    match /pending_changes/{changeId} {
+      allow read: if isAuthenticated() && isServiceProvider();
+      
+      allow create: if isAuthenticated() && hasRole('service_provider_analyst');
+      
+      allow update, delete: if isAuthenticated() && isServiceProviderAdmin();
+    }
+
+    // Deny access to model data and training data
+    match /models/{document=**} {
+      allow read, write: if false;
+    }
+    
+    match /training_data/{document=**} {
+      allow read, write: if false;
+    }
+
+    // Default deny all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

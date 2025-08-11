@@ -1,0 +1,48 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function getUserData() {
+      return firestore.get(/databases/(default)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function belongsToOrg(orgId) {
+      return isAuthenticated() && getUserData().orgId == orgId;
+    }
+    
+    function isServiceProvider() {
+      return getUserData().role in ['service_provider_admin', 'service_provider_analyst'];
+    }
+
+    // Media files organized by organization
+    match /media/{orgId}/{allPaths=**} {
+      allow read: if isAuthenticated() && (
+        belongsToOrg(orgId) || isServiceProvider()
+      );
+      
+      allow write: if isAuthenticated() && belongsToOrg(orgId);
+    }
+    
+    // User profile images
+    match /profiles/{userId}/{allPaths=**} {
+      allow read, write: if isAuthenticated() && (
+        request.auth.uid == userId || isServiceProvider()
+      );
+    }
+    
+    // Deny access to model files
+    match /models/{allPaths=**} {
+      allow read, write: if false;
+    }
+    
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
