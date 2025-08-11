@@ -1,5 +1,8 @@
 import { Request, Response } from 'express';
 import * as admin from 'firebase-admin';
+import { AIInferenceService } from '../services/aiInferenceService';
+
+const aiService = new AIInferenceService();
 
 export async function getInferenceResultHandler(req: Request, res: Response) {
   try {
@@ -53,6 +56,77 @@ export async function getInferenceResultHandler(req: Request, res: Response) {
         success: false,
         error: 'Access denied. You can only view your own reports.'
       });
+    }
+
+    if (!reportData.ai_result && reportData.status === 'processing') {
+      try {
+        console.log('Triggering AI inference for report', id);
+        
+        const inferenceRequest = {
+          imagePaths: reportData.media?.imagePaths || [],
+          videoPath: reportData.media?.videoPath,
+          atmModel: reportData.atmModel || 'Generic-ATM-Model',
+          orgId: reportData.orgId,
+        };
+
+        const aiResult = await aiService.processInference(inferenceRequest);
+        
+        await reportDoc.ref.update({
+          ai_result: {
+            anomaly_score: aiResult.anomalyScore,
+            detected: aiResult.detected,
+            confidence: aiResult.confidence,
+            model_version: aiResult.modelVersion,
+            heatmap_url: aiResult.heatmapUrl,
+            processed_at: aiResult.processedAt.toISOString(),
+          },
+          status: 'completed',
+          updated_at: new Date().toISOString(),
+        });
+
+        console.log('AI inference completed and saved', { 
+          reportId: id, 
+          detected: aiResult.detected,
+          anomalyScore: aiResult.anomalyScore 
+        });
+
+        const response = {
+          id: reportDoc.id,
+          status: 'completed',
+          ai_result: {
+            anomaly_score: aiResult.anomalyScore,
+            detected: aiResult.detected,
+            confidence: aiResult.confidence,
+            model_version: aiResult.modelVersion,
+            heatmap_url: aiResult.heatmapUrl,
+            processed_at: aiResult.processedAt.toISOString(),
+          },
+          timestamp: reportData.timestamp?.toDate?.()?.toISOString() || reportData.timestamp,
+          created_at: reportData.created_at?.toDate?.()?.toISOString() || reportData.created_at,
+          atmId: reportData.atmId,
+          mediaType: reportData.mediaType
+        };
+
+        return res.status(200).json({
+          success: true,
+          report: response
+        });
+
+      } catch (inferenceError) {
+        console.error('AI inference failed', { reportId: id, error: inferenceError });
+        
+        await reportDoc.ref.update({
+          status: 'error',
+          error_message: `AI inference failed: ${inferenceError}`,
+          updated_at: new Date().toISOString(),
+        });
+
+        return res.status(500).json({ 
+          success: false,
+          error: 'AI inference failed',
+          message: inferenceError instanceof Error ? inferenceError.message : 'Unknown error'
+        });
+      }
     }
 
     const response = {
